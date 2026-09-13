@@ -20,7 +20,7 @@ def create_guidance(
 ) -> GuidanceResponse:
     require_repository(db, repository_id, user.user_id)
     try:
-        return run_developer_guidance(repository_id, payload.task)
+        return run_developer_guidance(repository_id, payload.task, db=db)
     except NotImplementedError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

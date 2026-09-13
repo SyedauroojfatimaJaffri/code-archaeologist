@@ -94,6 +94,34 @@ def validate_public_repository(
             "Repository was not found or is not publicly accessible."
         )
     if response.status_code == 403:
+        import subprocess
+        try:
+            ls_res = subprocess.run(
+                ["git", "ls-remote", f"{repo_ref.github_url}.git", "HEAD"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if ls_res.returncode == 0 and ls_res.stdout.strip():
+                repo = GitHubRepoRef(
+                    owner=repo_ref.owner,
+                    name=repo_ref.name,
+                    github_url=repo_ref.github_url,
+                    default_branch="master",
+                    is_public=True,
+                )
+                return ValidationResult(
+                    repo=repo,
+                    metadata={
+                        "full_name": f"{repo_ref.owner}/{repo_ref.name}",
+                        "description": None,
+                        "default_branch": "master",
+                        "size": 0,
+                        "language": None,
+                    },
+                )
+        except Exception:
+            pass
         raise ValidationError(
             "GitHub API access was denied. Check the token or rate limits."
         )

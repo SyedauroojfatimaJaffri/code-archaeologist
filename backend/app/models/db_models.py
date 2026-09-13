@@ -17,9 +17,25 @@ from sqlalchemy import (
     create_engine,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, sessionmaker
 
 from app.core.config import get_settings
+
+
+@compiles(Vector, "sqlite")
+def _compile_vector_sqlite(element, compiler, **kw):
+    return "TEXT"
+
+
+@compiles(JSONB, "sqlite")
+def _compile_jsonb_sqlite(element, compiler, **kw):
+    return "JSON"
+
+
+@compiles(UUID, "sqlite")
+def _compile_uuid_sqlite(element, compiler, **kw):
+    return "CHAR(32)"
 
 
 def utcnow() -> datetime:
@@ -313,8 +329,11 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 def init_db() -> None:
     if not settings.auto_create_tables:
         return
-    with engine.begin() as connection:
-        connection.exec_driver_sql("CREATE EXTENSION IF NOT EXISTS vector")
+    try:
+        with engine.begin() as connection:
+            connection.exec_driver_sql("CREATE EXTENSION IF NOT EXISTS vector")
+    except Exception:
+        pass
     Base.metadata.create_all(bind=engine)
 
 

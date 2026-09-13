@@ -71,3 +71,24 @@ class OffboardingSessionResponse(BaseModel):
     knowledge_transfer_results: list[str] = Field(default_factory=list)
     created_at: datetime
     completed_at: datetime | None = None
+
+
+class OffboardingAnswerRequest(BaseModel):
+    question_id: UUID
+    answer: str = Field(..., min_length=1)
+
+
+class OffboardingAnswerResponse(BaseModel):
+    question_id: UUID
+    status: str
+
+
+class OffboardingReportResponse(BaseModel):
+    session_id: UUID
+    repository_id: UUID
+    contributor: str | None = None
+    summary: str
+    key_decisions: list[str] = Field(default_factory=list)
+    undocumented_areas: list[str] = Field(default_factory=list)
+    knowledge_items: list[dict] = Field(default_factory=list)
+    generated_at: datetime | None = None

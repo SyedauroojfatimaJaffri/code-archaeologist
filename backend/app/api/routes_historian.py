@@ -20,7 +20,7 @@ def ask_historian_question(
 ) -> HistorianQuestionResponse:
     require_repository(db, repository_id, user.user_id)
     try:
-        return run_historian_question(repository_id, payload.question)
+        return run_historian_question(repository_id, payload.question, db=db)
     except NotImplementedError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

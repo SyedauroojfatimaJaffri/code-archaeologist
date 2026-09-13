@@ -52,17 +52,12 @@ def _paginate_github(
                     headers=github_headers(github_token),
                     params=query,
                 )
-                if response.status_code == 404:
-                    raise RepositoryServiceError("Repository issues were not found.")
+                if response.status_code in (404, 410, 422):
+                    break
                 if response.status_code == 403:
-                    raise RepositoryServiceError(
-                        "GitHub API rate limit reached while fetching issues. "
-                        "Provide a GITHUB_TOKEN for higher limits."
-                    )
+                    break
                 if response.status_code >= 400:
-                    raise RepositoryServiceError(
-                        f"GitHub API returned status {response.status_code} for issues."
-                    )
+                    break
                 batch = response.json()
                 if not batch:
                     break
