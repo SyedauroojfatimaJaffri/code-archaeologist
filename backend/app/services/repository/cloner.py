@@ -64,6 +64,8 @@ def clone_repository(
             check=True,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
         )
     except FileNotFoundError as exc:
         cleanup_workspace(destination)

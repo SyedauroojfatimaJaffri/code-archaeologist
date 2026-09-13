@@ -76,6 +76,8 @@ def _extract_git_contributors(repo_path: Path) -> dict[str, ContributorRecord]:
             check=True,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             input="",
         )
     except FileNotFoundError as exc:
@@ -87,7 +89,7 @@ def _extract_git_contributors(repo_path: Path) -> dict[str, ContributorRecord]:
         raise RepositoryServiceError(stderr or "Failed to read git contributors.") from exc
 
     contributors: dict[str, ContributorRecord] = {}
-    for line in result.stdout.splitlines():
+    for line in (result.stdout or "").splitlines():
         line = line.strip()
         if not line:
             continue
@@ -133,12 +135,14 @@ def _first_last_seen(repo_path: Path) -> dict[str, tuple[datetime | None, dateti
             check=True,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
         )
     except subprocess.CalledProcessError:
         return {}
 
     seen: dict[str, list[datetime]] = {}
-    for line in result.stdout.splitlines():
+    for line in (result.stdout or "").splitlines():
         if "|" not in line:
             continue
         email, timestamp_raw = line.split("|", 1)
