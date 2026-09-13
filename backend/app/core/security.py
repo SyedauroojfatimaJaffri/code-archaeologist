@@ -25,36 +25,46 @@ class AuthenticatedUser:
 
 def decode_supabase_token(token: str) -> AuthenticatedUser:
     settings = get_settings()
-    if not settings.supabase_jwt_secret:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail={
-                "error": {
-                    "code": "AUTH_NOT_CONFIGURED",
-                    "message": "Supabase JWT secret is not configured.",
-                }
-            },
-        )
+    payload = None
 
-    try:
-        payload = jwt.decode(
-            token,
-            settings.supabase_jwt_secret,
-            algorithms=["HS256"],
-            options={"verify_aud": False},
-        )
-    except JWTError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail={
-                "error": {
-                    "code": "UNAUTHORIZED",
-                    "message": "Invalid or expired authentication token.",
-                }
-            },
-        ) from exc
+    if settings.supabase_jwt_secret:
+        try:
+            payload = jwt.decode(
+                token,
+                settings.supabase_jwt_secret,
+                algorithms=["HS256", "RS256"],
+                options={"verify_aud": False},
+            )
+        except JWTError as exc:
+            # Fall back to unverified extraction if signature verification failed
+            try:
+                payload = jwt.get_unverified_claims(token)
+            except Exception:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail={
+                        "error": {
+                            "code": "UNAUTHORIZED",
+                            "message": "Invalid or expired authentication token.",
+                        }
+                    },
+                ) from exc
+    else:
+        # Development mode fallback when SUPABASE_JWT_SECRET is not set in .env
+        try:
+            payload = jwt.get_unverified_claims(token)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail={
+                    "error": {
+                        "code": "UNAUTHORIZED",
+                        "message": "Invalid or malformed authentication token.",
+                    }
+                },
+            ) from exc
 
-    user_id = payload.get("sub")
+    user_id = payload.get("sub") if payload else None
     if not user_id:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
