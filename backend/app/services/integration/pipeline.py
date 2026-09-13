@@ -221,41 +221,118 @@ def run_analysis_job(job_id: UUID | str) -> None:
 
 
 def _run_m3_analysis_hooks(db: Session, repository: Repository, files: list[RepositoryFile]) -> None:
-    """Execute M3 analysis hooks if M3 service module is installed, or populate initial heuristic records."""
-    try:
-        from app.services.m3 import run_static_and_ai_analysis  # type: ignore
-        run_static_and_ai_analysis(db, repository.id)
-        return
-    except ImportError:
-        logger.info("M3 service module not present. Running fallback heuristic indexing.")
-
-    # Fallback heuristic risk records and knowledge gap detection
+    """Execute static parsing, dependency extraction, risk scoring, and semantic embeddings."""
+    # Clear existing derived records
+    db.query(Dependency).filter(Dependency.repository_id == repository.id).delete()
+    db.query(CodeEntity).filter(CodeEntity.repository_id == repository.id).delete()
     db.query(RiskRecord).filter(RiskRecord.repository_id == repository.id).delete()
     db.query(KnowledgeGap).filter(KnowledgeGap.repository_id == repository.id).delete()
 
-    # Create risk records for files with large size or complex extensions
-    for file_rec in files[:50]:
-        score = 0.2
-        signals = {}
-        if file_rec.size > 50_000:
-            score += 0.3
-            signals["large_file_size"] = file_rec.size
-        if "auth" in file_rec.path.lower() or "security" in file_rec.path.lower() or "core" in file_rec.path.lower():
-            score += 0.4
-            signals["critical_component"] = True
+    from app.services.parsing.python_parser import parse_python_file
+    from app.services.parsing.javascript_parser import parse_javascript_file
+    from app.services.parsing.dependency_mapper import map_dependencies
+    from app.services.risk.risk_scorer import RiskInputs, score_files
+    from app.services.retrieval.embeddings import embed_batch
+    from app.models.db_models import KnowledgeEmbedding
 
-        if score > 0.4:
-            db.add(
-                RiskRecord(
-                    repository_id=repository.id,
-                    file_id=file_rec.id,
-                    score=min(score, 1.0),
-                    signals=signals,
-                    explanation=f"Heuristic risk calculated based on size ({file_rec.size} bytes) and path location.",
-                )
+    all_file_entities = []
+    file_entity_map: dict[str, set[str]] = {}
+    raw_dependencies = []
+
+    for file_rec in files:
+        if not file_rec.content:
+            continue
+        ext = file_rec.path.rsplit(".", 1)[-1].lower() if "." in file_rec.path else ""
+        extracted_entities = []
+        if ext in ("py", "pyw"):
+            extracted_entities, _ = parse_python_file(
+                file_rec.content, file_id=str(file_rec.id), repository_id=str(repository.id)
+            )
+        elif ext in ("js", "jsx", "ts", "tsx", "mjs", "cjs"):
+            extracted_entities, _ = parse_javascript_file(
+                file_rec.content, file_id=str(file_rec.id), repository_id=str(repository.id)
             )
 
-    # Initial Knowledge Gap if documentation is scarce
+        if extracted_entities:
+            file_deps = map_dependencies(extracted_entities, repository_id=str(repository.id))
+            raw_dependencies.extend(file_deps)
+            all_file_entities.extend(extracted_entities)
+            file_entity_map[str(file_rec.id)] = {e.local_id for e in extracted_entities}
+
+    # Persist CodeEntity rows
+    local_to_db_id: dict[str, UUID] = {}
+    for entity in all_file_entities:
+        db_entity = CodeEntity(
+            repository_id=repository.id,
+            file_id=uuid.UUID(entity.file_id) if entity.file_id else None,
+            entity_type=entity.entity_type.value if hasattr(entity.entity_type, "value") else str(entity.entity_type),
+            name=entity.name,
+            start_line=entity.start_line,
+            end_line=entity.end_line,
+            signature=entity.signature,
+        )
+        db.add(db_entity)
+        db.flush()
+        local_to_db_id[entity.local_id] = db_entity.id
+
+    # Persist Dependency rows
+    for dep in raw_dependencies:
+        src_local = dep.get("source_entity_id")
+        tgt_local = dep.get("target_entity_id")
+        db.add(
+            Dependency(
+                repository_id=repository.id,
+                source_entity_id=local_to_db_id.get(src_local),
+                target_entity_id=local_to_db_id.get(tgt_local),
+                dependency_type=dep.get("dependency_type", "calls"),
+            )
+        )
+    db.commit()
+
+    # Risk Scoring with deterministic signals
+    commits = db.query(Commit).filter(Commit.repository_id == repository.id).all()
+    contributors = db.query(Contributor).filter(Contributor.repository_id == repository.id).all()
+
+    commit_dicts = [
+        {"hash": c.commit_hash, "author": c.author, "timestamp": c.timestamp, "message": c.message}
+        for c in commits
+    ]
+    contrib_dicts = [
+        {"name": c.name, "commit_count": c.commit_count, "first_seen": c.first_seen, "last_seen": c.last_seen}
+        for c in contributors
+    ]
+
+    risk_inputs_list = []
+    for file_rec in files:
+        risk_inputs_list.append(
+            RiskInputs(
+                file_id=str(file_rec.id),
+                repository_id=str(repository.id),
+                commits=commit_dicts,
+                contributors=contrib_dicts,
+                entity_local_ids=file_entity_map.get(str(file_rec.id), set()),
+                dependencies=raw_dependencies,
+                knowledge_gaps=[],
+            )
+        )
+
+    if risk_inputs_list:
+        try:
+            scored_records = score_files(risk_inputs_list)
+            for scored in scored_records:
+                db.add(
+                    RiskRecord(
+                        repository_id=repository.id,
+                        file_id=uuid.UUID(scored["file_id"]) if scored["file_id"] else None,
+                        score=scored["score"],
+                        signals=scored["signals"],
+                        explanation=scored["explanation"],
+                    )
+                )
+        except Exception as exc:
+            logger.warning("Deterministic risk scoring error: %s", exc)
+
+    # Knowledge Gap check
     has_readme = any("readme" in f.path.lower() for f in files)
     if not has_readme:
         db.add(
@@ -267,6 +344,27 @@ def _run_m3_analysis_hooks(db: Session, repository: Repository, files: list[Repo
                 status="open",
             )
         )
+
+    # Embeddings generation
+    try:
+        embed_texts = []
+        for file_rec in files[:20]:
+            if file_rec.content:
+                snippet = f"File: {file_rec.path}\n{file_rec.content[:500]}"
+                embed_texts.append(snippet)
+        if embed_texts:
+            embeddings = embed_batch(embed_texts)
+            for snip, vec in zip(embed_texts, embeddings):
+                db.add(
+                    KnowledgeEmbedding(
+                        repository_id=repository.id,
+                        content=snip,
+                        embedding=vec,
+                    )
+                )
+    except Exception as exc:
+        logger.warning("Embeddings generation skipped or failed: %s", exc)
+
     db.commit()
 
 

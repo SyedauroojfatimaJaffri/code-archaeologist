@@ -254,8 +254,8 @@ class KnowledgeEmbedding(Base):
     repository_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("repositories.id", ondelete="CASCADE"), index=True
     )
-    knowledge_item_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("knowledge_items.id", ondelete="CASCADE"), index=True
+    knowledge_item_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("knowledge_items.id", ondelete="CASCADE"), index=True, nullable=True
     )
     content: Mapped[str] = mapped_column(Text, nullable=False)
     embedding: Mapped[list[float] | None] = mapped_column(

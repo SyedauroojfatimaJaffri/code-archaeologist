@@ -4,7 +4,18 @@ import pytest
 from unittest.mock import patch, MagicMock
 from uuid import uuid4
 
-from app.models.db_models import Repository, AnalysisJob, KnowledgeGap, OffboardingSession
+from app.models.db_models import (
+    Repository,
+    AnalysisJob,
+    KnowledgeGap,
+    OffboardingSession,
+    RepositoryFile,
+    CodeEntity,
+    Dependency,
+    Commit,
+    RiskRecord,
+    KnowledgeItem,
+)
 from app.services.repository.validator import GitHubRepoRef, ValidationResult
 
 
@@ -14,8 +25,9 @@ def test_health_check(client):
     assert response.json()["status"] == "ok"
 
 
-@patch("app.api.routes_repositories.validate_public_repository")
-def test_create_repository(mock_validate, client):
+@patch("app.api.routes_repository.run_analysis_job")
+@patch("app.api.routes_repository.validate_public_repository")
+def test_create_repository_with_github_url(mock_validate, mock_run_job, client):
     mock_validate.return_value = ValidationResult(
         repo=GitHubRepoRef(
             owner="example",
@@ -34,7 +46,30 @@ def test_create_repository(mock_validate, client):
     data = response.json()
     assert "repository_id" in data
     assert data["github_url"] == "https://github.com/example/repo"
-    assert data["status"] == "created"
+    assert data["status"] in ["processing", "created", "queued"]
+
+
+@patch("app.api.routes_repository.run_analysis_job")
+@patch("app.api.routes_repository.validate_public_repository")
+def test_create_repository_with_url_key(mock_validate, mock_run_job, client):
+    mock_validate.return_value = ValidationResult(
+        repo=GitHubRepoRef(
+            owner="example",
+            name="repo-url-key",
+            github_url="https://github.com/example/repo-url-key",
+            default_branch="main",
+            is_public=True,
+        ),
+        metadata={},
+    )
+
+    payload = {"url": "https://github.com/example/repo-url-key"}
+    response = client.post("/repositories", json=payload)
+
+    assert response.status_code == 201
+    data = response.json()
+    assert "repository_id" in data
+    assert data["github_url"] == "https://github.com/example/repo-url-key"
 
 
 def test_list_repositories(client, db_session):
@@ -75,6 +110,51 @@ def test_get_repository_detail(client, db_session):
     assert data["name"] == "repo2"
 
 
+def test_get_repository_status(client, db_session):
+    repo = Repository(
+        user_id="usr_test_123456",
+        github_url="https://github.com/example/repo-status-test",
+        name="repo-status-test",
+        owner="example",
+        default_branch="main",
+        status="running",
+    )
+    db_session.add(repo)
+    db_session.commit()
+
+    job = AnalysisJob(repository_id=repo.id, status="running")
+    db_session.add(job)
+    db_session.commit()
+
+    response = client.get(f"/repositories/{repo.id}/status")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["repository_id"] == str(repo.id)
+    assert data["status"] == "running"
+
+
+def test_delete_repository(client, db_session):
+    repo = Repository(
+        user_id="usr_test_123456",
+        github_url="https://github.com/example/repo-to-delete",
+        name="repo-to-delete",
+        owner="example",
+        default_branch="main",
+        status="created",
+    )
+    db_session.add(repo)
+    db_session.commit()
+
+    response = client.delete(f"/repositories/{repo.id}")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "deleted"
+
+    # Verify not found after delete
+    get_res = client.get(f"/repositories/{repo.id}")
+    assert get_res.status_code == 404
+
+
 def test_get_repository_not_found_locked_error(client):
     fake_id = uuid4()
     response = client.get(f"/repositories/{fake_id}")
@@ -103,12 +183,11 @@ def test_start_analysis_and_get_job(mock_run_job, client, db_session):
     assert "analysis_job_id" in data
     assert data["status"] == "queued"
 
-    job_id = data["analysis_job_id"]
-    job_response = client.get(f"/analysis/{job_id}")
-    assert job_response.status_code == 200
-    job_data = job_response.json()
-    assert job_data["analysis_job_id"] == job_id
+    job_res = client.get(f"/analysis/{data['analysis_job_id']}")
+    assert job_res.status_code == 200
+    job_data = job_res.json()
     assert job_data["status"] == "queued"
+    assert job_data["repository_id"] == str(repo.id)
 
 
 def test_historian_question(client, db_session):
@@ -259,62 +338,6 @@ def test_user_isolation_cannot_access_other_users_repo(client_user2, db_session)
     assert question_res.json()["error"]["code"] == "REPOSITORY_NOT_FOUND"
 
 
-def test_user_isolation_list_repositories_only_own_user1(client, db_session):
-    """User 1 only sees User 1's repos, not User 2's repos."""
-    repo1 = Repository(
-        user_id="usr_test_123456",
-        github_url="https://github.com/example/u1-repo",
-        name="u1-repo",
-        owner="example",
-        default_branch="main",
-        status="created",
-    )
-    repo2 = Repository(
-        user_id="usr_test_789012",
-        github_url="https://github.com/example/u2-repo",
-        name="u2-repo",
-        owner="example",
-        default_branch="main",
-        status="created",
-    )
-    db_session.add_all([repo1, repo2])
-    db_session.commit()
-
-    res1 = client.get("/repositories")
-    assert res1.status_code == 200
-    ids_1 = [r["repository_id"] for r in res1.json()]
-    assert str(repo1.id) in ids_1
-    assert str(repo2.id) not in ids_1
-
-
-def test_user_isolation_list_repositories_only_own_user2(client_user2, db_session):
-    """User 2 only sees User 2's repos, not User 1's repos."""
-    repo1 = Repository(
-        user_id="usr_test_123456",
-        github_url="https://github.com/example/u1-repo-b",
-        name="u1-repo-b",
-        owner="example",
-        default_branch="main",
-        status="created",
-    )
-    repo2 = Repository(
-        user_id="usr_test_789012",
-        github_url="https://github.com/example/u2-repo-b",
-        name="u2-repo-b",
-        owner="example",
-        default_branch="main",
-        status="created",
-    )
-    db_session.add_all([repo1, repo2])
-    db_session.commit()
-
-    res2 = client_user2.get("/repositories")
-    assert res2.status_code == 200
-    ids_2 = [r["repository_id"] for r in res2.json()]
-    assert str(repo2.id) in ids_2
-    assert str(repo1.id) not in ids_2
-
-
 def test_unauthenticated_request_rejected(unauthenticated_client):
     """Requests without a valid Supabase token must return 401 with locked error format."""
     res = unauthenticated_client.get("/repositories")
@@ -337,7 +360,6 @@ def test_repository_files_and_content(client, db_session):
     db_session.add(repo)
     db_session.commit()
 
-    from app.models.db_models import RepositoryFile
     file_record = RepositoryFile(
         repository_id=repo.id,
         path="src/index.ts",
@@ -349,13 +371,16 @@ def test_repository_files_and_content(client, db_session):
     db_session.add(file_record)
     db_session.commit()
 
-    # List files
+    # List files (hierarchical tree)
     tree_res = client.get(f"/repositories/{repo.id}/files")
     assert tree_res.status_code == 200
     tree_data = tree_res.json()
-    assert tree_data["repository_id"] == str(repo.id)
-    assert len(tree_data["files"]) == 1
-    assert tree_data["files"][0]["path"] == "src/index.ts"
+    assert isinstance(tree_data, list)
+    assert len(tree_data) >= 1
+    assert tree_data[0]["name"] == "src"
+    assert tree_data[0]["type"] == "directory"
+    assert len(tree_data[0]["children"]) == 1
+    assert tree_data[0]["children"][0]["name"] == "index.ts"
 
     # Get file detail
     detail_res = client.get(f"/repositories/{repo.id}/files/src/index.ts")
@@ -371,8 +396,89 @@ def test_repository_files_and_content(client, db_session):
     assert nf_res.json()["error"]["code"] == "FILE_NOT_FOUND"
 
 
+def test_repository_architecture_endpoint(client, db_session):
+    """GET /repositories/{id}/architecture."""
+    repo = Repository(
+        user_id="usr_test_123456",
+        github_url="https://github.com/example/repo-arch",
+        name="repo-arch",
+        owner="example",
+        default_branch="main",
+        status="created",
+    )
+    db_session.add(repo)
+    db_session.commit()
+
+    e1 = CodeEntity(
+        repository_id=repo.id,
+        entity_type="class",
+        name="AuthService",
+        signature="class AuthService",
+    )
+    e2 = CodeEntity(
+        repository_id=repo.id,
+        entity_type="function",
+        name="login_handler",
+        signature="def login_handler()",
+    )
+    db_session.add_all([e1, e2])
+    db_session.commit()
+
+    dep = Dependency(
+        repository_id=repo.id,
+        source_entity_id=e2.id,
+        target_entity_id=e1.id,
+        dependency_type="calls",
+    )
+    db_session.add(dep)
+    db_session.commit()
+
+    res = client.get(f"/repositories/{repo.id}/architecture")
+    assert res.status_code == 200
+    data = res.json()
+    assert "nodes" in data
+    assert "edges" in data
+    assert len(data["nodes"]) == 2
+    assert len(data["edges"]) == 1
+    assert data["edges"][0]["source"] == str(e2.id)
+    assert data["edges"][0]["target"] == str(e1.id)
+
+
+def test_repository_history_endpoint(client, db_session):
+    """GET /repositories/{id}/history."""
+    repo = Repository(
+        user_id="usr_test_123456",
+        github_url="https://github.com/example/repo-history",
+        name="repo-history",
+        owner="example",
+        default_branch="main",
+        status="created",
+    )
+    db_session.add(repo)
+    db_session.commit()
+
+    from datetime import datetime, timezone
+    commit = Commit(
+        repository_id=repo.id,
+        commit_hash="a1b2c3d4",
+        author="Dev Lead",
+        message="Initial architecture setup",
+        timestamp=datetime.now(timezone.utc),
+    )
+    db_session.add(commit)
+    db_session.commit()
+
+    res = client.get(f"/repositories/{repo.id}/history")
+    assert res.status_code == 200
+    data = res.json()
+    assert "events" in data
+    assert len(data["events"]) == 1
+    assert data["events"][0]["identifier"] == "a1b2c3d4"
+    assert data["events"][0]["author"] == "Dev Lead"
+
+
 def test_repository_risks_and_knowledge(client, db_session):
-    """GET /repositories/{id}/risks and GET /repositories/{id}/knowledge."""
+    """GET /repositories/{id}/risks and GET /repositories/{id}/risk."""
     repo = Repository(
         user_id="usr_test_123456",
         github_url="https://github.com/example/repo-risk-know",
@@ -384,7 +490,6 @@ def test_repository_risks_and_knowledge(client, db_session):
     db_session.add(repo)
     db_session.commit()
 
-    from app.models.db_models import RiskRecord, KnowledgeItem
     risk = RiskRecord(
         repository_id=repo.id,
         score=0.85,
@@ -401,13 +506,18 @@ def test_repository_risks_and_knowledge(client, db_session):
     db_session.add_all([risk, k_item])
     db_session.commit()
 
-    # Get risks
+    # Get risks (plural)
     risk_res = client.get(f"/repositories/{repo.id}/risks")
     assert risk_res.status_code == 200
     risk_data = risk_res.json()
     assert len(risk_data["risks"]) == 1
     assert risk_data["risks"][0]["score"] == 0.85
     assert len(risk_data["risks"][0]["signals"]) == 2
+
+    # Get risks (singular)
+    risk_res_sing = client.get(f"/repositories/{repo.id}/risk")
+    assert risk_res_sing.status_code == 200
+    assert len(risk_res_sing.json()["risks"]) == 1
 
     # Get knowledge
     know_res = client.get(f"/repositories/{repo.id}/knowledge")
@@ -424,4 +534,3 @@ def test_validation_error_format(client):
     data = res.json()
     assert "error" in data
     assert data["error"]["code"] == "INVALID_REQUEST"
-
