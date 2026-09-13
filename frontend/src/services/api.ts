@@ -1,12 +1,9 @@
 import { supabase } from "@/lib/supabase";
 import { ApiError, type ApiErrorResponse } from "@/types/api";
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL as string | undefined;
-
-if (!API_BASE_URL) {
-  // eslint-disable-next-line no-console
-  console.warn("[api] VITE_API_BASE_URL is not set. API requests will fail until it is configured.");
-}
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL ||
+  import.meta.env.VITE_API_URL ||
+  "http://127.0.0.1:8000") as string;
 
 type RequestOptions = Omit<RequestInit, "body"> & {
   body?: unknown;
