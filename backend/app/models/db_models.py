@@ -322,7 +322,34 @@ class OffboardingQuestion(Base):
 
 
 settings = get_settings()
-engine = create_engine(settings.database_url, pool_pre_ping=True)
+
+
+def _get_engine():
+    db_url = settings.database_url
+    if db_url.startswith("postgres"):
+        try:
+            test_engine = create_engine(
+                db_url,
+                pool_pre_ping=True,
+                connect_args={"connect_timeout": 3},
+            )
+            with test_engine.connect():
+                pass
+            return test_engine
+        except Exception as exc:
+            import logging
+            logging.getLogger("code_archaeologist").warning(
+                "PostgreSQL connection to %s failed (%s). Falling back to SQLite database (sqlite:///code_archaeologist.db).",
+                db_url,
+                exc,
+            )
+            return create_engine("sqlite:///code_archaeologist.db", connect_args={"check_same_thread": False})
+    if db_url.startswith("sqlite"):
+        return create_engine(db_url, connect_args={"check_same_thread": False})
+    return create_engine(db_url, pool_pre_ping=True)
+
+
+engine = _get_engine()
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
 
