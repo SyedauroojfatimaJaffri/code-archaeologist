@@ -99,6 +99,8 @@ def extract_commits(
             check=True,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
         )
     except FileNotFoundError as exc:
         raise RepositoryServiceError(
@@ -117,7 +119,7 @@ def extract_commits(
         raise RepositoryServiceError(stderr_text or "Failed to read commit history.") from exc
 
     commits: list[CommitRecord] = []
-    for raw_block in result.stdout.split(_COMMIT_MARKER):
+    for raw_block in (result.stdout or "").split(_COMMIT_MARKER):
         record = _parse_commit_block(raw_block, include_diff=include_diff)
         if record:
             commits.append(record)
