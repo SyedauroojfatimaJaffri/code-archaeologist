@@ -56,14 +56,8 @@ def _fetch_github_contributors(
             f"Unable to fetch contributors from GitHub: {exc}"
         ) from exc
 
-    if response.status_code == 404:
-        return []
-    if response.status_code in {403, 422}:
-        return []
     if response.status_code >= 400:
-        raise RepositoryServiceError(
-            f"GitHub API returned status {response.status_code} for contributors."
-        )
+        return []
     return response.json()
 
 

@@ -36,11 +36,12 @@ def _parse_commit_block(block: str, *, include_diff: bool) -> CommitRecord | Non
     lines = block.splitlines()
     header = lines[0]
     parts = header.split("===", 4)
-    if len(parts) < 5:
+    if len(parts) < 4:
         return None
 
-    _, commit_hash, author, timestamp_raw, subject = parts[0], parts[1], parts[2], parts[3], parts[4]
-    body_lines: list[str] = []
+    commit_hash, author, timestamp_raw, subject = parts[0], parts[1], parts[2], parts[3]
+    initial_body = parts[4] if len(parts) > 4 else ""
+    body_lines: list[str] = [initial_body.strip()] if initial_body.strip() else []
     diff_lines: list[str] = []
     mode = "body"
 
@@ -104,8 +105,16 @@ def extract_commits(
             "Git is not installed or not available on PATH."
         ) from exc
     except subprocess.CalledProcessError as exc:
-        stderr = (exc.stderr or "").strip()
-        raise RepositoryServiceError(stderr or "Failed to read commit history.") from exc
+        stderr_text = (exc.stderr or "").strip()
+        stderr_lower = stderr_text.lower()
+        if (
+            "does not have any commits yet" in stderr_lower
+            or "unknown revision" in stderr_lower
+            or "bad default revision 'head'" in stderr_lower
+            or "fatal: your current branch" in stderr_lower
+        ):
+            return []
+        raise RepositoryServiceError(stderr_text or "Failed to read commit history.") from exc
 
     commits: list[CommitRecord] = []
     for raw_block in result.stdout.split(_COMMIT_MARKER):

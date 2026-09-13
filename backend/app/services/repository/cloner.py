@@ -87,4 +87,19 @@ def cleanup_workspace(path: Path) -> None:
     """Remove a cloned repository workspace directory."""
     if not path.exists():
         return
-    shutil.rmtree(path, ignore_errors=True)
+    import os
+    import stat
+
+    def _unlink_readonly(action, target, exc):
+        try:
+            os.chmod(target, stat.S_IWRITE)
+            action(target)
+        except Exception:
+            pass
+
+    try:
+        shutil.rmtree(path, onexc=_unlink_readonly)
+    except TypeError:
+        shutil.rmtree(path, onerror=_unlink_readonly)
+    except Exception:
+        shutil.rmtree(path, ignore_errors=True)
