@@ -12,12 +12,14 @@ from fastapi.responses import JSONResponse
 
 from app.api import (
     routes_analysis,
+    routes_architecture,
     routes_files,
     routes_guidance,
     routes_historian,
+    routes_history,
     routes_knowledge,
     routes_offboarding,
-    routes_repositories,
+    routes_repository,
     routes_risk,
 )
 from app.core.config import get_settings
@@ -112,9 +114,11 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
 
 
 # Register API Routers
-app.include_router(routes_repositories.router)
+app.include_router(routes_repository.router)
 app.include_router(routes_analysis.router)
 app.include_router(routes_files.router)
+app.include_router(routes_architecture.router)
+app.include_router(routes_history.router)
 app.include_router(routes_historian.router)
 app.include_router(routes_guidance.router)
 app.include_router(routes_risk.router)
